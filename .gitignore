@@ -1,0 +1,5 @@
+credentials.json
+名片資料.xlsx
+__pycache__/
+*.pyc
+.env
