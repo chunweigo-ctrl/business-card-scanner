@@ -101,7 +101,7 @@ HTML_PAGE = """
         <div class="icon">📷</div>
         <strong>拍照或選擇名片圖片</strong>
         <p>支援 JPG、PNG 格式</p>
-        <input type="file" id="fileInput" accept="image/*" capture="environment">
+        <input type="file" id="fileInput" accept="image/*">
       </div>
 
       <!-- 裁切區 -->
