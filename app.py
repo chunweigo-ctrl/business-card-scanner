@@ -199,8 +199,8 @@ HTML_PAGE = """
     }
 
     function renderFields(data) {
-      const keys = ['name','title','organization','mobile','email','phone','address','line'];
-      const labels = ['姓名','抬頭','所屬單位','手機','Email','電話','地址','Line'];
+      const keys = ['name','title','organization','mobile','email','phone','address','line','tax_id'];
+      const labels = ['姓名','抬頭','所屬單位','手機','Email','電話','地址','Line','統一編號'];
       const container = document.getElementById('fields');
       container.innerHTML = '';
       keys.forEach((key, i) => {
@@ -217,7 +217,7 @@ HTML_PAGE = """
         setStatus('saveStatus', 'error', '❌ 請先選擇分類！');
         return;
       }
-      const keys = ['name','title','organization','mobile','email','phone','address','line'];
+      const keys = ['name','title','organization','mobile','email','phone','address','line','tax_id'];
       const payload = { category: selectedCategory };
       keys.forEach(k => payload[k] = document.getElementById('field_' + k).value);
       setStatus('saveStatus', 'loading', '<span class="spinner"></span>儲存到 Google Sheets 中...');
@@ -321,6 +321,7 @@ def save():
             data.get("phone", ""),
             data.get("address", ""),
             data.get("line", ""),
+            data.get("tax_id", ""),
         ]
         service = get_sheets_service()
         service.spreadsheets().values().append(
