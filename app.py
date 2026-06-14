@@ -1,16 +1,11 @@
 import os
-import base64
-import json
 import re
 import io
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template_string, send_file
-import openpyxl
-from openpyxl import load_workbook
-from openpyxl.drawing.image import Image as XLImage
-from openpyxl.utils import get_column_letter
+from flask import Flask, request, jsonify, render_template_string
 from google.cloud import vision
-from PIL import Image as PILImage
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
 app = Flask(__name__)
 CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
@@ -22,26 +17,13 @@ if not CREDENTIALS_FILE.exists():
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(CREDENTIALS_FILE)
 
-EXCEL_FILE = Path(__file__).parent / "名片資料.xlsx"
-IMAGES_DIR = Path(__file__).parent / "card_images"
-IMAGES_DIR.mkdir(exist_ok=True)
-COLUMNS = ["名片圖片", "分類", "姓名", "抬頭", "所屬單位", "手機", "Email", "電話", "地址", "Line"]
+SPREADSHEET_ID = "105ZaHH47MV07b_rBNZQd427RGmbKd5B-_QNCZS4tdxw"
+SHEET_NAME = "工作表1"
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-def get_or_create_workbook():
-    if EXCEL_FILE.exists():
-        wb = load_workbook(EXCEL_FILE)
-        ws = wb.active
-    else:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "名片資料"
-        ws.append(COLUMNS)
-        # 設定欄寬
-        ws.column_dimensions["A"].width = 22
-        for col in ["B","C","D","E","F","G","H","I","J"]:
-            ws.column_dimensions[col].width = 18
-        wb.save(EXCEL_FILE)
-    return wb, ws
+def get_sheets_service():
+    creds = Credentials.from_service_account_file(str(CREDENTIALS_FILE), scopes=SCOPES)
+    return build("sheets", "v4", credentials=creds)
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -84,7 +66,6 @@ HTML_PAGE = """
     .category-btn { padding: 8px 16px; border: 2px solid #e2e8f0; border-radius: 20px; background: white; font-size: 14px; cursor: pointer; transition: all 0.2s; color: #4a5568; }
     .category-btn.selected { border-color: #4299e1; background: #ebf8ff; color: #2b6cb0; font-weight: 600; }
     .category-label { font-size: 12px; color: #718096; font-weight: 500; margin-bottom: 4px; display: block; }
-    /* Cropper */
     .cropper-wrap { display: none; margin-top: 16px; }
     .cropper-wrap img { max-width: 100%; }
     #cropPreview { width: 100%; max-height: 280px; object-fit: contain; border-radius: 8px; display: none; margin-top: 12px; }
@@ -104,7 +85,6 @@ HTML_PAGE = """
         <input type="file" id="fileInput" accept="image/*">
       </div>
 
-      <!-- 裁切區 -->
       <div class="cropper-wrap" id="cropperWrap">
         <p style="font-size:13px;color:#718096;margin-bottom:8px;">✂️ 拖曳框線裁切名片範圍</p>
         <img id="cropImg" src="">
@@ -133,7 +113,7 @@ HTML_PAGE = """
         </div>
       </div>
       <div class="status" id="saveStatus"></div>
-      <button class="btn btn-green" onclick="saveToSheet()">✅ 儲存到 Excel</button>
+      <button class="btn btn-green" onclick="saveCard()">✅ 儲存到 Google Sheets</button>
     </div>
   </div>
 
@@ -153,17 +133,9 @@ HTML_PAGE = """
       document.getElementById('scanBtn').style.display = 'none';
       document.getElementById('cropPreview').style.display = 'none';
       document.getElementById('resultCard').style.display = 'none';
-
       if (cropper) { cropper.destroy(); cropper = null; }
       setTimeout(() => {
-        cropper = new Cropper(img, {
-          aspectRatio: NaN,
-          viewMode: 1,
-          movable: true,
-          zoomable: true,
-          rotatable: false,
-          scalable: false,
-        });
+        cropper = new Cropper(img, { aspectRatio: NaN, viewMode: 1, movable: true, zoomable: true, rotatable: false, scalable: false });
       }, 100);
     });
 
@@ -207,10 +179,8 @@ HTML_PAGE = """
       const btn = document.getElementById('scanBtn');
       btn.disabled = true;
       setStatus('scanStatus', 'loading', '<span class="spinner"></span>AI 辨識中，請稍候...');
-
       const formData = new FormData();
       formData.append('image', croppedBlob, 'card.jpg');
-
       try {
         const res = await fetch('/scan', { method: 'POST', body: formData });
         const data = await res.json();
@@ -242,24 +212,24 @@ HTML_PAGE = """
       });
     }
 
-    async function saveToSheet() {
+    async function saveCard() {
       if (!selectedCategory) {
         setStatus('saveStatus', 'error', '❌ 請先選擇分類！');
         return;
       }
       const keys = ['name','title','organization','mobile','email','phone','address','line'];
-      const payload = new FormData();
-      payload.append('category', selectedCategory);
-      keys.forEach(k => payload.append(k, document.getElementById('field_' + k).value));
-      if (croppedBlob) payload.append('image', croppedBlob, 'card.jpg');
-
-      setStatus('saveStatus', 'loading', '<span class="spinner"></span>儲存中...');
-
+      const payload = { category: selectedCategory };
+      keys.forEach(k => payload[k] = document.getElementById('field_' + k).value);
+      setStatus('saveStatus', 'loading', '<span class="spinner"></span>儲存到 Google Sheets 中...');
       try {
-        const res = await fetch('/save', { method: 'POST', body: payload });
+        const res = await fetch('/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        setStatus('saveStatus', 'success', '✅ 已儲存到 Excel！<br><a href="/download" style="color:#276749;font-weight:600;">⬇️ 下載最新 Excel</a>');
+        setStatus('saveStatus', 'success', '✅ 已儲存到 Google Sheets！<br><a href="https://docs.google.com/spreadsheets/d/105ZaHH47MV07b_rBNZQd427RGmbKd5B-_QNCZS4tdxw" target="_blank" style="color:#276749;font-weight:600;">📊 開啟 Google Sheets 查看</a>');
       } catch (e) {
         setStatus('saveStatus', 'error', '❌ 儲存失敗：' + e.message);
       }
@@ -322,20 +292,15 @@ def index():
 def scan():
     if "image" not in request.files:
         return jsonify({"error": "未收到圖片"}), 400
-
     image_bytes = request.files["image"].read()
-
     try:
         client = vision.ImageAnnotatorClient()
         image = vision.Image(content=image_bytes)
         response = client.text_detection(image=image)
-
         if response.error.message:
             return jsonify({"error": response.error.message}), 500
-
         full_text = response.full_text_annotation.text if response.full_text_annotation else ""
         print(f"[OCR TEXT]\n{full_text}")
-
         data = parse_card_text(full_text)
         return jsonify(data)
     except Exception as e:
@@ -345,57 +310,31 @@ def scan():
 @app.route("/save", methods=["POST"])
 def save():
     try:
-        category = request.form.get("category", "")
-        name = request.form.get("name", "")
-        row_data = [
-            request.form.get("title", ""),
-            request.form.get("organization", ""),
-            request.form.get("mobile", ""),
-            request.form.get("email", ""),
-            request.form.get("phone", ""),
-            request.form.get("address", ""),
-            request.form.get("line", ""),
+        data = request.get_json()
+        row = [
+            data.get("category", ""),
+            data.get("name", ""),
+            data.get("title", ""),
+            data.get("organization", ""),
+            data.get("mobile", ""),
+            data.get("email", ""),
+            data.get("phone", ""),
+            data.get("address", ""),
+            data.get("line", ""),
         ]
-
-        wb, ws = get_or_create_workbook()
-        next_row = ws.max_row + 1
-
-        # 設定列高
-        ws.row_dimensions[next_row].height = 80
-
-        # 寫入資料（B欄之後）
-        ws.cell(row=next_row, column=2, value=category)
-        ws.cell(row=next_row, column=3, value=name)
-        for i, val in enumerate(row_data):
-            ws.cell(row=next_row, column=4+i, value=val)
-
-        # 嵌入名片圖片到 A 欄
-        if "image" in request.files:
-            img_bytes = request.files["image"].read()
-            pil_img = PILImage.open(io.BytesIO(img_bytes))
-            pil_img.thumbnail((160, 100))
-            img_io = io.BytesIO()
-            pil_img.save(img_io, format="JPEG")
-            img_io.seek(0)
-
-            xl_img = XLImage(img_io)
-            xl_img.width = 150
-            xl_img.height = 90
-            cell = f"A{next_row}"
-            ws.add_image(xl_img, cell)
-
-        wb.save(EXCEL_FILE)
-        print(f"[SAVED] {name} -> row {next_row}")
+        service = get_sheets_service()
+        service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{SHEET_NAME}!A:I",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [row]}
+        ).execute()
+        print(f"[SAVED TO SHEETS] {data.get('name')}")
         return jsonify({"ok": True})
     except Exception as e:
         print(f"[ERROR] {e}")
         return jsonify({"error": str(e)}), 500
-
-@app.route("/download")
-def download():
-    if not EXCEL_FILE.exists():
-        return "尚無資料", 404
-    return send_file(EXCEL_FILE, as_attachment=True, download_name="名片資料.xlsx")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
